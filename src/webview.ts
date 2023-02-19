@@ -90,7 +90,7 @@ const generateHTMLCanvas = (
             for (let x = 0; x < width; x++){
               for (let y = 0; y < height; y++){
                 let color = colorData[(y * width) + x];
-                ctx.fillStyle = "rgba(" + color.r + "," + color.g + "," + color.b + "," + 1.0 + ")";
+                ctx.fillStyle = "rgba(" + color.r + "," + color.g + "," + color.b + "," +  (color.a ?? 1.0) + ")";
                 ctx.fillRect(x * scale, y * scale, scale, scale);
               }
             }

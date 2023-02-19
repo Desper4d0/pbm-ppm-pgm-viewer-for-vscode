@@ -19,6 +19,26 @@ const isWhiteSpace = (byteData: Uint8Array, i: number): boolean => {
   );
 };
 
+const isInRange = (from : number , to : number , x : number): boolean  => {
+  //Inclusive range 
+  return x >=  from && x  <= to ;
+};
+const getNextPixel = (data: Uint8Array, index: number , channels : number  , bytesPerChanel : number):[newIndex:number , pixel:number[]]  => {
+  //data in big endian format
+  // return :
+  //[0] - new index 
+  //[1] - array of channels 
+  let pixel:number[] = [];
+  for(let c = 0 ; c < channels ; c++){
+    let val:number = data[index++];
+    for(let b = 1 ; b < bytesPerChanel ; b++){
+      val = (val << 8 ) | data[index++];
+    }
+    pixel.push(val);
+  }
+  return [ index , pixel];
+};
+
 const getNextByte = (data: Uint8Array, index: number, isSingleBit: boolean) => {
   // Once this function returns, its should return:
   // 1) The next interpreted and casted byte
@@ -68,8 +88,11 @@ const parseByteFormat = (byteData: Uint8Array) => {
     width = 1,
     height = 1,
     mc = 1,
+    tupleType = "",
+    depth = 0,
     k = 0,
-    kl = 3;
+    kl = 3,
+    lastToken = "";
   while (k < kl) {
     while (
       i < byteData.byteLength &&
@@ -82,6 +105,7 @@ const parseByteFormat = (byteData: Uint8Array) => {
         i++;
       }
     } else {
+      if(!(imgType === "P7")){ 
       switch (k) {
         case 0:
           imgType = byteData.subarray(j, i).toString();
@@ -93,6 +117,9 @@ const parseByteFormat = (byteData: Uint8Array) => {
             imgType === "P6"
           )
             kl++;
+
+            if(imgType === "P7"){kl = 12;}
+
           break;
         case 1:
           width = Number(byteData.subarray(j, i).toString());
@@ -106,7 +133,44 @@ const parseByteFormat = (byteData: Uint8Array) => {
           console.log(`Color: ${mc}`);
           break;
       }
-      k++;
+
+
+    }else{
+      // P7  , https://netpbm.sourceforge.net/doc/pam.html
+      let currentToken = byteData.subarray(j, i).toString();
+      if(k % 2 == 0){ 
+        switch (lastToken){
+          case "HEIGHT":
+            height = Number(currentToken);
+            break;
+          case "WIDTH":
+            width = Number(currentToken);
+            break;
+          case "DEPTH":
+            depth  = Number(currentToken);
+            break;
+          case "MAXVAL":
+            mc = Number(currentToken);
+            break;
+          case "TUPLTYPE":
+            tupleType += currentToken;
+            kl+= 2;
+            break;
+          default:
+              console.log(`Unknown token: ${lastToken}`);
+              return { status: PARSE_STATUS.FAILURE };
+        }
+      }else if( currentToken === "ENDHDR"){ 
+          console.log(`Size: ${width}x${height}\nDepth: ${depth}\nMaxVal: ${mc}\nTupleType: ${tupleType}`);
+          if(width < 1 || height < 1 || mc < 1 || depth < 1){
+            return { status: PARSE_STATUS.FAILURE };
+          }
+          k = kl; // exit while 
+      }
+      
+      lastToken = currentToken;
+    }
+    k++;
     }
     i++;
     while (
@@ -120,7 +184,7 @@ const parseByteFormat = (byteData: Uint8Array) => {
 
   let pixelIndex = 0;
   const totalPixels = width * height;
-  let colorData: { r: number; g: number; b: number }[] = [];
+  let colorData: { r: number; g: number; b: number ; a? : number}[] = [];
   let index = i;
   switch (imgType) {
     case "P1": {
@@ -218,10 +282,111 @@ const parseByteFormat = (byteData: Uint8Array) => {
       }
       break;
     }
+    case "P7" : {
+      
+      let bpc = 1 ; // bytes per channel 
+      for(let maxVal = mc ;  maxVal = maxVal >> 8 ; bpc++  );
+
+      let pixelCount = totalPixels,
+      bytesToRead = totalPixels * bpc * depth ;
+
+      if(bytesToRead > (byteData.length - index)){ 
+          let missingBytes = bytesToRead - (byteData.length - index);
+        console.log(` Missing  ${missingBytes} bytes!`);
+        return { status: PARSE_STATUS.FAILURE };
+      }
+
+      let p:number[];
+
+
+      
+      if(mc === 1 && (depth === 1  || tupleType === "BLACKANDWHITE" && depth >= 1)){          
+          while (pixelCount--) {
+             
+            [index , p ] = getNextPixel(byteData , index , depth ,bpc );
+            let color = p[0]*255;
+            colorData.push({
+              r: color,
+              g: color,
+              b: color,
+            });;
+        }
+        
+      }else if(depth === 1  || tupleType === "GRAYSCALE" && depth >= 1 ){
+
+        while (pixelCount--) {
+           
+          [index , p ] = getNextPixel(byteData , index , depth ,bpc );
+          let color = p[0] / mc * 255;
+          colorData.push({
+            r: color,
+            g: color,
+            b: color,
+          });
+        }
+
+      }else if(mc === 1 && (depth === 2  || tupleType === "BLACKANDWHITE_ALPHA" && depth >= 2)){
+        while (pixelCount--) {
+           
+          [index , p ] = getNextPixel(byteData , index , depth ,bpc );
+          let color = p[0]*255;
+          colorData.push({
+            r: color,
+            g: color,
+            b: color,
+            a: p[1],
+          });
+      }
+      }else if(depth === 2  ||   tupleType === "GRAYSCALE_ALPHA" && depth >= 2){
+        while (pixelCount--) {
+           
+          [index , p ] = getNextPixel(byteData , index , depth ,bpc );
+          let color = p[0] / mc *255;
+          let alpha = p[0] / mc;
+          colorData.push({
+            r: color,
+            g: color,
+            b: color,
+            a : alpha,
+          });;
+      }
+
+      }else if(depth === 3 || tupleType === "RGB" && depth >= 3){ 
+
+        while (pixelCount--) {
+           
+          [index , p ]= getNextPixel(byteData , index , depth ,bpc );
+          colorData.push({
+            r: p[0]/mc * 255,
+            g: p[1]/mc * 255,
+            b: p[2]/mc * 255,
+          });
+
+        }
+      
+      }else if(depth === 4 || tupleType === "RGB_ALPHA" && depth >= 4){
+
+      while (pixelCount--) {
+         
+        [index , p ] = getNextPixel(byteData , index , depth ,bpc );
+        colorData.push({
+          r: p[0]/mc * 255,
+          g: p[1]/mc * 255,
+          b: p[2]/mc * 255,
+          a: p[3]/mc,
+        });
+
+      }  
+      }else{ 
+        
+        return { status: PARSE_STATUS.FAILURE };
+      }
+      imgType += ` ${tupleType}`;
+      break;
+    }
     default:
       return { status: PARSE_STATUS.FAILURE };
   }
-
   return { status: PARSE_STATUS.SUCCESS, colorData, width, height, imgType };
 };
 
